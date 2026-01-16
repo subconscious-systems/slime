@@ -1,12 +1,22 @@
+import json
 from .math_utils import extract_answer, grade_answer_mathd, grade_answer_sympy
 
 
 def get_deepscaler_rule_based_reward(response, label):
-    if "</think>" in response:
-        model_solution = response.split("</think>")[-1]
-    elif "###Response" in response:
-        model_solution = response.split("###Response")[1]
-    else:
+    # if "</think>" in response:
+    #     model_solution = response.split("</think>")[-1]
+    # elif "###Response" in response:
+    #     model_solution = response.split("###Response")[1]
+    # else:
+    #     return 0
+    # sys.exit()
+
+    model_solution = ''
+    try:
+        model_solution = json.loads(response.strip('<|im_end|>'))['answer']
+    except:
+        open('/mnt/slurm/slime/logs/response.txt', 'w').write(response)
+        # sys.exit()
         return 0
 
     model_answer = extract_answer(model_solution)

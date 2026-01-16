@@ -5,6 +5,7 @@ Answer checker API that uses sympy to simplify expressions and check for equalit
 Call grade_answer(given_answer: str, ground_truth: str).
 """
 import re
+import json
 
 import sympy
 from pylatexenc import latex2text

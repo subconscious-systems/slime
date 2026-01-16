@@ -16,8 +16,14 @@ export MASTER_ADDR="10.128.2.102"
 export BASE_FOLDER="/mnt/slurm"
 export GLOO_SOCKET_IFNAME=bond0
 
-# Fix CUDA paths for conda-installed cuda-toolkit
-# The headers are in targets/x86_64-linux/include, not in include/
+# Set all environment variables directly
+export PYTHONPATH="/mnt/slurm/Megatron-LM/"
+export CUDA_DEVICE_MAX_CONNECTIONS="1"
+export NCCL_NVLS_ENABLE="1"
+export no_proxy="127.0.0.1,${MASTER_ADDR}"
+export CUDA_HOME="/mnt/slurm/anaconda3/envs/slime"
+export LD_LIBRARY_PATH="${CUDA_HOME}/lib64:${CUDA_HOME}/lib:/usr/lib/x86_64-linux-gnu"
+export TRITON_LIBCUDA_PATH="/usr/lib/x86_64-linux-gnu/libcuda.so"
 
 # if base folder not set raise error
 if [ -z "${BASE_FOLDER}" ]; then
@@ -41,25 +47,19 @@ else
 fi
 echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
 source "${SCRIPT_DIR}/models/qwen3-next-80B-A3B.sh"
 
 CKPT_ARGS=(
-   # --hf-checkpoint ${BASE_FOLDER}/models/Qwen3-Next-80B-A3B-Thinking
-   # --ref-load ${SLIME_DIR}/resource/Qwen3-Next-80B-A3B-Thinking_torch_dist
-   # --load ${SLIME_DIR}/ckpts/Qwen3-Next-80B-A3B-Thinking_slime/
-   # --save ${SLIME_DIR}/ckpts/Qwen3-Next-80B-A3B-Thinking_slime/
-
-   --hf-checkpoint ${BASE_FOLDER}/models/tim-next-80B-A3B-SFT
-   --ref-load ${SLIME_DIR}/resource/tim-next-80B-A3B-SFT_torch_dist
-   --load ${SLIME_DIR}/ckpts/tim-next-80B-A3B_torch_dist_slime-rl/
-   --save ${SLIME_DIR}/ckpts/tim-next-80B-A3B_torch_dist_slime-rl/
-
-   --save-interval 300
+   --hf-checkpoint ${BASE_FOLDER}/models/Qwen3-Next-80B-A3B-Thinking
+   --ref-load ${SLIME_DIR}/resource/Qwen3-Next-80B-A3B-Thinking_torch_dist
+   --load ${SLIME_DIR}/ckpts/Qwen3-Next-80B-A3B-Thinking_slime/
+   --save ${SLIME_DIR}/ckpts/Qwen3-Next-80B-A3B-Thinking_slime/
+   --save-interval 20
 )
 
 ROLLOUT_ARGS=(
-   --prompt-data ${BASE_FOLDER}/data/dapo-math-17k/dapo-math-17k-tim-new.jsonl
+   --prompt-data ${BASE_FOLDER}/data/dapo-math-17k/dapo-math-17k.jsonl
    --input-key prompt
    --label-key label
    --apply-chat-template
@@ -81,7 +81,6 @@ EVAL_ARGS=(
    --n-samples-per-eval-prompt 16
    --eval-max-response-len 16384
    --eval-top-p 1
-   
 )
 
 PERF_ARGS=(
@@ -109,7 +108,6 @@ GRPO_ARGS=(
    --kl-coef 0.00
    --entropy-coef 0.00
    --eps-clip 4e-4
-   --ref-update-interval 200
 )
 
 OPTIMIZER_ARGS=(
@@ -139,13 +137,6 @@ SGLANG_ARGS=(
    
    --sglang-cuda-graph-bs 1 2 4 8 $(seq 16 8 128)
 
-   # mtp
-   # --sglang-speculative-algorithm EAGLE
-   # --sglang-speculative-num-steps 2
-   # --sglang-speculative-eagle-topk 1
-   # --sglang-speculative-num-draft-tokens 3
-   # --sglang-enable-draft-weights-cpu-backup
-
    --sglang-max-running-requests 512
 )
 
@@ -159,45 +150,43 @@ MISC_ARGS=(
    # need to comment this when using model with MLA
    --attention-backend flash
 
-   --moe-token-dispatcher-type alltoall
+   --moe-token-dispatcher-type flex
    # --moe-enable-deepep
 )
 
 # launch the master node of ray in container
-export no_proxy="127.0.0.1,${MASTER_ADDR}"
-export CUDA_HOME=/mnt/slurm/anaconda3/envs/slime
-export LD_LIBRARY_PATH=${CUDA_HOME}/lib64:${CUDA_HOME}/lib:/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
-ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 8 --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
+ulimit -n 65536 && ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 8 --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
+
 # for WORKER_IP in $(awk '{print $1}' /root/mpi_rack_hostfile); do
 for WORKER_IP in 10.128.2.103 10.128.2.104 10.128.2.106; do
-#   if [[ "$WORKER_IP" == "$MLP_WORKER_0_HOST" ]]; then
-#     continue
-#   fi
   echo "Starting Ray worker on ${WORKER_IP}"
   ssh -i /home/ubuntu/.ssh/slime_key ubuntu@"${WORKER_IP}" \
-    "source /mnt/slurm/anaconda3/bin/activate slime ; export GLOO_SOCKET_IFNAME=bond0 ; export CUDA_HOME=/mnt/slurm/anaconda3/envs/slime ; export LD_LIBRARY_PATH=\${CUDA_HOME}/lib64:\${CUDA_HOME}/lib:/usr/lib/x86_64-linux-gnu:\$LD_LIBRARY_PATH ; pkill -9 sglang ; ray stop --force ; pkill -9 python ; ray start --address=${MASTER_ADDR}:6379 --num-gpus 8 --node-ip-address ${WORKER_IP} --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265"
+    "source /mnt/slurm/anaconda3/bin/activate slime && \
+     export GLOO_SOCKET_IFNAME=bond0 && \
+     export PYTHONPATH=/mnt/slurm/Megatron-LM/ && \
+     export CUDA_HOME=/mnt/slurm/anaconda3/envs/slime && \
+     export LD_LIBRARY_PATH=\${CUDA_HOME}/lib64:\${CUDA_HOME}/lib:/usr/lib/x86_64-linux-gnu:\$LD_LIBRARY_PATH && \
+     pkill -9 sglang && ray stop --force && pkill -9 python && \
+     ulimit -n 65536 && ray start --address=${MASTER_ADDR}:6379 --num-gpus 8 --node-ip-address ${WORKER_IP} --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265"
 done
-# wait
 
-# Build the runtime environment JSON with proper variable substitution
-# CUDA_HOME and LD_LIBRARY_PATH are needed for Triton to find CUDA drivers
-CONDA_ENV_PATH="/mnt/slurm/anaconda3/envs/slime"
-RUNTIME_ENV_JSON="{
-  \"env_vars\": {
-    \"PYTHONPATH\": \"/mnt/slurm/Megatron-LM/\",
-    \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
-    \"NCCL_NVLS_ENABLE\": \"${HAS_NVLINK}\",
-    \"no_proxy\": \"${no_proxy}\",
-    \"MASTER_ADDR\": \"${MASTER_ADDR}\",
-    \"CUDA_HOME\": \"${CONDA_ENV_PATH}\",
-    \"LD_LIBRARY_PATH\": \"${CONDA_ENV_PATH}/lib64:${CONDA_ENV_PATH}/lib:/usr/lib/x86_64-linux-gnu\",
-    \"TRITON_LIBCUDA_PATH\": \"/usr/lib/x86_64-linux-gnu/libcuda.so\"
-  }
-}"
+# Run train.py directly (no ray job submit) with runtime_env for PYTHONPATH
+python3 -c "
+import ray
+import os
 
-ray job submit --address="http://127.0.0.1:8265" \
-   --runtime-env-json="${RUNTIME_ENV_JSON}" \
-   -- python3 train.py \
+ray.init(address='auto', runtime_env={
+    'env_vars': {
+        'PYTHONPATH': '/mnt/slurm/Megatron-LM/',
+        'CUDA_DEVICE_MAX_CONNECTIONS': '1',
+        'NCCL_NVLS_ENABLE': '1',
+        'CUDA_HOME': '/mnt/slurm/anaconda3/envs/slime',
+        'LD_LIBRARY_PATH': '/mnt/slurm/anaconda3/envs/slime/lib64:/mnt/slurm/anaconda3/envs/slime/lib:/usr/lib/x86_64-linux-gnu',
+        'TRITON_LIBCUDA_PATH': '/usr/lib/x86_64-linux-gnu/libcuda.so',
+        'GLOO_SOCKET_IFNAME': 'bond0',
+    }
+})
+" && python3 train.py \
    --actor-num-nodes 4 \
    --actor-num-gpus-per-node 8 \
    --colocate \
@@ -211,7 +200,3 @@ ray job submit --address="http://127.0.0.1:8265" \
    ${EVAL_ARGS[@]} \
    ${SGLANG_ARGS[@]} \
    ${MISC_ARGS[@]}
-
-
-# ssh -i /home/ubuntu/.ssh/slime_key ubuntu@10.128.2.103 \
-#     "source /mnt/slurm/anaconda3/bin/activate slime ; pkill -9 sglang ; ray stop --force ; pkill -9 python ; ray start --address=10.128.2.102:6379 --num-gpus 8 --node-ip-address 10.128.2.103 --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265"

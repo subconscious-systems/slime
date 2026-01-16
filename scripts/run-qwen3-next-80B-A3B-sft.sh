@@ -14,7 +14,7 @@ set -ex
 
 export MASTER_ADDR="10.128.2.102"
 export BASE_FOLDER="/mnt/slurm"
-export GLOO_SOCKET_IFNAME=bond0
+# export GLOO_SOCKET_IFNAME=bond0
 
 # Fix CUDA paths for conda-installed cuda-toolkit
 # The headers are in targets/x86_64-linux/include, not in include/
@@ -45,43 +45,27 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 source "${SCRIPT_DIR}/models/qwen3-next-80B-A3B.sh"
 
 CKPT_ARGS=(
-   # --hf-checkpoint ${BASE_FOLDER}/models/Qwen3-Next-80B-A3B-Thinking
-   # --ref-load ${SLIME_DIR}/resource/Qwen3-Next-80B-A3B-Thinking_torch_dist
-   # --load ${SLIME_DIR}/ckpts/Qwen3-Next-80B-A3B-Thinking_slime/
-   # --save ${SLIME_DIR}/ckpts/Qwen3-Next-80B-A3B-Thinking_slime/
-
-   --hf-checkpoint ${BASE_FOLDER}/models/tim-next-80B-A3B-SFT
-   --ref-load ${SLIME_DIR}/resource/tim-next-80B-A3B-SFT_torch_dist
-   --load ${SLIME_DIR}/ckpts/tim-next-80B-A3B_torch_dist_slime-rl/
-   --save ${SLIME_DIR}/ckpts/tim-next-80B-A3B_torch_dist_slime-rl/
-
-   --save-interval 300
+   --hf-checkpoint ${BASE_FOLDER}/models/Qwen3-Next-80B-A3B-Thinking
+   --ref-load ${SLIME_DIR}/resource/Qwen3-Next-80B-A3B-Thinking_torch_dist
+   --load ${SLIME_DIR}/ckpts/Qwen3-Next-80B-A3B-Thinking_slime-sft/
+   --save ${SLIME_DIR}/ckpts/Qwen3-Next-80B-A3B-Thinking_slime-sft/
+   --save-interval 200
 )
 
-ROLLOUT_ARGS=(
-   --prompt-data ${BASE_FOLDER}/data/dapo-math-17k/dapo-math-17k-tim-new.jsonl
-   --input-key prompt
-   --label-key label
-   --apply-chat-template
+SFT_ARGS=(
+   --rollout-function-path slime.rollout.sft_rollout.generate_rollout
+   --prompt-data ${BASE_FOLDER}/data/tim/tim_rollouts.parquet
+   --input-key messages
+   # --apply-chat-template
    --rollout-shuffle
-   --rm-type deepscaler
-   --num-rollout 3000
-   --rollout-batch-size 32
-   --n-samples-per-prompt 8
-   --rollout-max-response-len 8192
-   --rollout-temperature 1
+   --num-epoch 2
+   --rollout-batch-size 128
+   --global-batch-size 128
 
-   --global-batch-size 256
-   --balance-data
-)
-
-EVAL_ARGS=(
-   --eval-interval 20
-   --eval-prompt-data aime /mnt/slurm/data/aime-2024/aime-2024.jsonl
-   --n-samples-per-eval-prompt 16
-   --eval-max-response-len 16384
-   --eval-top-p 1
-   
+   --loss-type sft_loss
+   --calculate-per-token-loss
+   --disable-compute-advantages-and-returns
+   --debug-train-only
 )
 
 PERF_ARGS=(
@@ -98,24 +82,15 @@ PERF_ARGS=(
 
    # --micro-batch-size 1
    --use-dynamic-batch-size
-   --max-tokens-per-gpu 8192
-)
-
-GRPO_ARGS=(
-   --advantage-estimator gspo
-   #--use-kl-loss
-   --kl-loss-coef 0.00
-   --kl-loss-type low_var_kl
-   --kl-coef 0.00
-   --entropy-coef 0.00
-   --eps-clip 4e-4
-   --ref-update-interval 200
+   --max-tokens-per-gpu 9216
 )
 
 OPTIMIZER_ARGS=(
    --optimizer adam
-   --lr 1e-6
-   --lr-decay-style constant
+   --lr 1e-5
+   --lr-decay-style cosine
+   --min-lr 1e-6
+   --lr-warmup-fraction 0.1
    --weight-decay 0.1
    --adam-beta1 0.9
    --adam-beta2 0.98
@@ -128,25 +103,8 @@ OPTIMIZER_ARGS=(
 WANDB_ARGS=(
    --use-wandb
    --wandb-project slime-dev
-   --wandb-group qwen3-next-80B-A3B-test
+   --wandb-group qwen3-next-80B-A3B-sft
    --wandb-key 215aba97807e844aa3fd6d9cf554c28ac64edec8
-)
-
-SGLANG_ARGS=(
-   --rollout-num-gpus-per-engine 8
-   --sglang-mem-fraction-static 0.8
-   --sglang-ep-size 8
-   
-   --sglang-cuda-graph-bs 1 2 4 8 $(seq 16 8 128)
-
-   # mtp
-   # --sglang-speculative-algorithm EAGLE
-   # --sglang-speculative-num-steps 2
-   # --sglang-speculative-eagle-topk 1
-   # --sglang-speculative-num-draft-tokens 3
-   # --sglang-enable-draft-weights-cpu-backup
-
-   --sglang-max-running-requests 512
 )
 
 MISC_ARGS=(
@@ -175,9 +133,9 @@ for WORKER_IP in 10.128.2.103 10.128.2.104 10.128.2.106; do
 #   fi
   echo "Starting Ray worker on ${WORKER_IP}"
   ssh -i /home/ubuntu/.ssh/slime_key ubuntu@"${WORKER_IP}" \
-    "source /mnt/slurm/anaconda3/bin/activate slime ; export GLOO_SOCKET_IFNAME=bond0 ; export CUDA_HOME=/mnt/slurm/anaconda3/envs/slime ; export LD_LIBRARY_PATH=\${CUDA_HOME}/lib64:\${CUDA_HOME}/lib:/usr/lib/x86_64-linux-gnu:\$LD_LIBRARY_PATH ; pkill -9 sglang ; ray stop --force ; pkill -9 python ; ray start --address=${MASTER_ADDR}:6379 --num-gpus 8 --node-ip-address ${WORKER_IP} --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265"
+    "source /mnt/slurm/anaconda3/bin/activate slime ; export GLOO_SOCKET_IFNAME=bond0 ; export CUDA_HOME=/mnt/slurm/anaconda3/envs/slime ; export LD_LIBRARY_PATH=\${CUDA_HOME}/lib64:\${CUDA_HOME}/lib:/usr/lib/x86_64-linux-gnu:\$LD_LIBRARY_PATH ; pkill -9 sglang ; ray stop --force ; pkill -9 python ; ray start --address=${MASTER_ADDR}:6379 --num-gpus 8 --node-ip-address ${WORKER_IP} --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265" &
 done
-# wait
+wait
 
 # Build the runtime environment JSON with proper variable substitution
 # CUDA_HOME and LD_LIBRARY_PATH are needed for Triton to find CUDA drivers
@@ -197,19 +155,16 @@ RUNTIME_ENV_JSON="{
 
 ray job submit --address="http://127.0.0.1:8265" \
    --runtime-env-json="${RUNTIME_ENV_JSON}" \
-   -- python3 train.py \
+   -- python3 train_async.py \
    --actor-num-nodes 4 \
    --actor-num-gpus-per-node 8 \
-   --colocate \
    ${MODEL_ARGS[@]} \
    ${CKPT_ARGS[@]} \
-   ${ROLLOUT_ARGS[@]} \
+   ${SFT_ARGS[@]} \
    ${OPTIMIZER_ARGS[@]} \
-   ${GRPO_ARGS[@]} \
    ${WANDB_ARGS[@]} \
    ${PERF_ARGS[@]} \
    ${EVAL_ARGS[@]} \
-   ${SGLANG_ARGS[@]} \
    ${MISC_ARGS[@]}
 
 

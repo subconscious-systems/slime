@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import json
 import inspect
 import logging
 from argparse import Namespace
@@ -13,6 +14,9 @@ import sglang_router
 from packaging.version import parse
 from tqdm import tqdm
 
+from pydantic import BaseModel
+from typing import List, Optional
+
 from slime.rollout.base_types import RolloutFnEvalOutput, RolloutFnTrainOutput
 from slime.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter
 from slime.utils.async_utils import run
@@ -24,6 +28,39 @@ from slime.utils.processing_utils import encode_image_for_rollout_engine, load_p
 from slime.utils.types import Sample
 
 from .rm_hub import async_rm, batched_async_rm
+
+class TaskLV5(BaseModel):
+    thought: str
+    conclusion: str
+
+class TaskLV4(BaseModel):
+    thought: str
+    subtasks: Optional[List[TaskLV5]] = None
+    conclusion: str
+
+class TaskLV3(BaseModel):
+    thought: str
+    # tooluse: Optional[Union[ToolUse, str]] = None
+    subtasks: Optional[List[TaskLV4]] = None
+    conclusion: str
+
+class TaskLV2(BaseModel):
+    thought: str
+    # tooluse: Optional[Union[ToolUse, str]] = None
+    subtasks: Optional[List[TaskLV3]] = None
+    conclusion: str
+
+class Task(BaseModel):
+    thought: str
+    # subtasks: Optional[List['Task']] = None
+    subtasks: Optional[List[TaskLV2]] = None
+    conclusion: str
+
+Task.model_rebuild()
+
+class Solution(BaseModel):
+    reasoning: List[Task]
+    answer: str
 
 __all__ = ["generate_rollout"]
 
@@ -54,6 +91,7 @@ class GenerateState(metaclass=SingletonMeta):
             skip_special_tokens=args.rollout_skip_special_tokens,
             no_stop_trim=True,
             spaces_between_special_tokens=False,
+            json_schema=json.dumps(Solution.model_json_schema())
         )
 
         if getattr(args, "sglang_enable_deterministic_inference", False):
@@ -131,10 +169,14 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         return sample
 
     # Prepare payload for sglang server
+    if 'json_schema' not in sampling_params:
+        sampling_params['json_schema'] = json.dumps(Solution.model_json_schema())
+
     payload = {
         "sampling_params": sampling_params,
         "return_logprob": True,
     }
+    # print(sampling_params)
 
     if args.use_rollout_routing_replay:
         payload["return_routed_experts"] = True
@@ -470,6 +512,7 @@ async def eval_rollout_single_dataset(
         skip_special_tokens=args.rollout_skip_special_tokens,
         no_stop_trim=True,
         spaces_between_special_tokens=False,
+        json_schema=json.dumps(Solution.model_json_schema())
     )
 
     tasks = []

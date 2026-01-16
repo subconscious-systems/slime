@@ -120,7 +120,9 @@ def _build_messages(data: dict, prompt_key: str, as_conversation: bool, multimod
         if not as_conversation:
             return prompt
         else:
-            prompt = [{"role": "user", "content": prompt}]
+            prompt = [
+                {"role": "user", "content": prompt}
+            ]
 
     if multimodal_keys:
         # Build mapping: placeholder -> (MultimodalType, content_list)

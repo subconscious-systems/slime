@@ -10,12 +10,9 @@ from megatron.core.transformer.transformer_layer import get_transformer_layer_of
 from transformers import AutoConfig
 from transformers.activations import ACT2FN
 
-try:
-    from fla.modules import FusedRMSNormGated, ShortConvolution
-    from fla.ops.gated_delta_rule import chunk_gated_delta_rule
-    from transformers.models.qwen3_next.modeling_qwen3_next import Qwen3NextAttention, Qwen3NextRMSNorm
-except ImportError:
-    pass
+from fla.modules import FusedRMSNormGated, ShortConvolution
+from fla.ops.gated_delta_rule import chunk_gated_delta_rule
+from transformers.models.qwen3_next.modeling_qwen3_next import Qwen3NextAttention, Qwen3NextRMSNorm
 
 from .hf_attention import HuggingfaceAttention
 

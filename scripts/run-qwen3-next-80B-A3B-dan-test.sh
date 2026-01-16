@@ -45,21 +45,15 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 source "${SCRIPT_DIR}/models/qwen3-next-80B-A3B.sh"
 
 CKPT_ARGS=(
-   # --hf-checkpoint ${BASE_FOLDER}/models/Qwen3-Next-80B-A3B-Thinking
-   # --ref-load ${SLIME_DIR}/resource/Qwen3-Next-80B-A3B-Thinking_torch_dist
-   # --load ${SLIME_DIR}/ckpts/Qwen3-Next-80B-A3B-Thinking_slime/
-   # --save ${SLIME_DIR}/ckpts/Qwen3-Next-80B-A3B-Thinking_slime/
-
-   --hf-checkpoint ${BASE_FOLDER}/models/tim-next-80B-A3B-SFT
-   --ref-load ${SLIME_DIR}/resource/tim-next-80B-A3B-SFT_torch_dist
-   --load ${SLIME_DIR}/ckpts/tim-next-80B-A3B_torch_dist_slime-rl/
-   --save ${SLIME_DIR}/ckpts/tim-next-80B-A3B_torch_dist_slime-rl/
-
-   --save-interval 300
+   --hf-checkpoint ${BASE_FOLDER}/models/Qwen3-Next-80B-A3B-Thinking
+   --ref-load ${SLIME_DIR}/resource/Qwen3-Next-80B-A3B-Thinking_torch_dist
+   --load ${SLIME_DIR}/ckpts/Qwen3-Next-80B-A3B-Thinking_slime/
+   --save ${SLIME_DIR}/ckpts/Qwen3-Next-80B-A3B-Thinking_slime/
+   --save-interval 20
 )
 
 ROLLOUT_ARGS=(
-   --prompt-data ${BASE_FOLDER}/data/dapo-math-17k/dapo-math-17k-tim-new.jsonl
+   --prompt-data ${BASE_FOLDER}/data/dapo-math-17k/dapo-math-17k.jsonl
    --input-key prompt
    --label-key label
    --apply-chat-template
@@ -81,7 +75,6 @@ EVAL_ARGS=(
    --n-samples-per-eval-prompt 16
    --eval-max-response-len 16384
    --eval-top-p 1
-   
 )
 
 PERF_ARGS=(
@@ -109,7 +102,6 @@ GRPO_ARGS=(
    --kl-coef 0.00
    --entropy-coef 0.00
    --eps-clip 4e-4
-   --ref-update-interval 200
 )
 
 OPTIMIZER_ARGS=(
