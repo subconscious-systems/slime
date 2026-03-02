@@ -109,7 +109,7 @@ GRPO_ARGS=(
    --kl-coef 0.00
    --entropy-coef 0.00
    --eps-clip 4e-4
-   --ref-update-interval 200
+   # --ref-update-interval 200
 )
 
 OPTIMIZER_ARGS=(
