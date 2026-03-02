@@ -163,6 +163,12 @@ MISC_ARGS=(
    # --moe-enable-deepep
 )
 
+SPEC_ARGS={
+   # --mtp-num-layers 1
+   # --enable-mtp-training
+   # --mtp-loss-scaling-factor 0.2
+}
+
 # launch the master node of ray in container
 export no_proxy="127.0.0.1,${MASTER_ADDR}"
 export CUDA_HOME=/mnt/slurm/anaconda3/envs/slime

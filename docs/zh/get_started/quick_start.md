@@ -44,7 +44,7 @@ slime 已经安装在该 Docker 镜像中。如需更新到最新版本，请在
 # 路径可根据实际情况调整
 cd /root/slime
 git pull
-pip install -e .
+pip install -e . --no-deps
 ```
 
 ## 模型与数据集下载
@@ -70,7 +70,7 @@ hf download --repo-type dataset zhuzilin/aime-2024 \
 
 当使用 Megatron 作为训练后端时，需要先将 Hugging Face 格式的模型权重转换为 Megatron `torch_dist` 格式。
 
-首先，加载目标模型的配置文件。`slime/scripts/models` 目录下包含了支持模型的配置文件。需要 `source` 对应模型的脚本，将配置参数加载到当前环境中。此处我们以 GLM4-9B 模型为例子，对于 Qwen3-4B，Qwen3-30B-A3B，是类似的。
+首先，加载目标模型的配置文件。`slime/scripts/models` 目录下包含了支持模型的配置文件。需要 `source` 对应模型的脚本，将配置参数加载到当前环境中。此处我们以 GLM4-9B 模型为例子，对于 Qwen3-4B，GLM-4.7-Flash，Qwen3-30B-A3B，是类似的。
 
 ```bash
 cd /root/slime
@@ -103,15 +103,6 @@ PYTHONPATH=/root/Megatron-LM python tools/convert_torch_dist_to_hf.py \
 ```
 
 由于 Megatron 会对 embedding 做 padding，可能会出现转换出来的权重的 embedding 形状不匹配的问题。这时需要在转换时设置 `--vocab-size`。
-
-对于使用 FSDP 后端训练并保存的检查点（目录中没有 `common.pt` 的情况），请使用专门的转换脚本。将 `--input-dir` 指向检查点目录（例如 `iter_xxx` 或 `iter_xxx/model`），并提供原始 Hugging Face 模型路径：
-
-```bash
-python tools/convert_fsdp_to_hf.py \
-  --input-dir /path/to/fsdp_ckpt/iter_xxx \
-  --output-dir /root/fsdp-converted \
-  --origin-hf-dir /root/GLM-Z1-9B-0414
-```
 
 ## 训练脚本与参数概览
 
@@ -370,8 +361,12 @@ slime 支持更复杂的采样策略，例如 [DAPO](https://dapo-sia.github.io/
 
 ```python
 def check_reward_nonzero_std(args, samples: list[Sample], **kwargs):
-    rewards = [sample.reward for sample in samples]
-    return torch.tensor(rewards, dtype=torch.float).std() > 0.0
+    rewards = [sample.get_reward_value(args) for sample in samples]
+    keep = torch.tensor(rewards, dtype=torch.float).std() > 0.0
+    return DynamicFilterOutput(
+        keep=keep,
+        reason=None if keep else f"zero_std_{round(rewards[0], 1)}",
+    )
 ```
 
 如果过滤函数非常严格，导致大量 prompt 组被丢弃，系统会监控 ` remaining_batch_size` 中待处理的任务数量。一旦待处理的任务数因丢弃过多而降至目标数 (32) 以下，系统会自动触发新一轮的过采样，再次请求  `over_sampling_batch_size` (64) 个新的 prompt 重复上述流程。
@@ -582,5 +577,6 @@ ray job submit --address="http://127.0.0.1:8265" \
 
 slime 针对大规模混合专家（MoE）模型的分布式训练进行了深度优化。我们提供了一些端到端的训练案例以供参考：
 
+- [示例：8xH100 训练 GLM-4.7-Flash](../examples/glm4.7-30B-A3B.md)
 - [示例：64xH100 训练 GLM-4.5](../examples/glm4.5-355B-A32B.md)
 - [示例：128xH100 训练 DeepSeek-R1](../examples/deepseek-r1.md)

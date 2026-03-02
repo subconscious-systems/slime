@@ -3,6 +3,7 @@ import copy
 import json
 import inspect
 import logging
+import uuid
 from argparse import Namespace
 from collections.abc import Callable
 from contextlib import contextmanager
@@ -24,7 +25,12 @@ from slime.utils.data import Dataset
 from slime.utils.eval_config import EvalDatasetConfig
 from slime.utils.http_utils import get, post
 from slime.utils.misc import SingletonMeta, load_function
-from slime.utils.processing_utils import encode_image_for_rollout_engine, load_processor, load_tokenizer
+from slime.utils.processing_utils import (
+    build_processor_kwargs,
+    encode_image_for_rollout_engine,
+    load_processor,
+    load_tokenizer,
+)
 from slime.utils.types import Sample
 
 from .rm_hub import async_rm, batched_async_rm
@@ -149,8 +155,9 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         sample.status == Sample.Status.PENDING or sample.status == Sample.Status.ABORTED
     ), f"Sample status is {sample.status}"
 
-    if state.processor:
-        processor_output = state.processor(text=sample.prompt, **sample.multimodal_inputs)
+    if state.processor and sample.multimodal_inputs and any(v is not None for v in sample.multimodal_inputs.values()):
+        processor_kwargs = build_processor_kwargs(sample.multimodal_inputs)
+        processor_output = state.processor(text=sample.prompt, **processor_kwargs)
         prompt_ids = processor_output["input_ids"][0]
         sample.multimodal_train_inputs = {
             k: v for k, v in processor_output.items() if k not in ["input_ids", "attention_mask"]
@@ -193,7 +200,12 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         if not sample.tokens:  # Initialize sample.tokens for the first turn
             sample.tokens = prompt_ids
 
-    output = await post(url, payload)
+    # Use session_id for consistent hashing routing if router uses consistent_hashing policy
+    headers = None
+    if args.sglang_router_policy == "consistent_hashing" and sample.session_id:
+        headers = {"X-SMG-Routing-Key": sample.session_id}
+
+    output = await post(url, payload, headers=headers)
 
     if args.use_slime_router and "RadixTreeMiddleware" in args.slime_router_middleware_paths:
         from slime.router.middleware_hub.radix_tree_middleware import postprocess_sample_with_radix_tree
@@ -210,6 +222,11 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         sample.tokens = sample.tokens + new_response_tokens
         sample.response_length += len(new_response_tokens)
         sample.response += output["text"]
+
+        # When partial rollout and masking off policy is enabled, update the loss mask
+        if sample.loss_mask is not None:
+            assert args.partial_rollout and args.mask_offpolicy_in_partial_rollout
+            sample.loss_mask += [1] * len(new_response_tokens)
 
         if sample.rollout_log_probs is None:
             sample.rollout_log_probs = []
@@ -256,8 +273,11 @@ async def generate_and_rm(
             return sample
 
         with state.dp_rank_context() as _:
-            if args.custom_generate_function_path is not None:
-                custom_generate_func = load_function(args.custom_generate_function_path)
+            # Check sample.generate_function_path for per-sample custom_generate_function_path (e.g., from eval dataset config)
+            custom_func_path = getattr(sample, "generate_function_path", None) or args.custom_generate_function_path
+
+            if custom_func_path is not None:
+                custom_generate_func = load_function(custom_func_path)
                 # if signature has evaluation, pass evaluation
                 if "evaluation" in inspect.signature(custom_generate_func).parameters:
                     sample = await custom_generate_func(args, sample, sampling_params, evaluation=evaluation)
@@ -300,6 +320,11 @@ async def generate_and_rm_group(
     if state.aborted:
         return group
 
+    # Generate a unique session_id for each sample in the group
+    for sample in group:
+        if sample.session_id is None:
+            sample.session_id = str(uuid.uuid4())
+
     tasks = []
     for idx, sample in enumerate(group):
         current_sampling_params = sampling_params.copy()
@@ -336,7 +361,11 @@ async def abort(args: Namespace, rollout_id: int) -> list[list[Sample]]:
         urls = [worker["url"] for worker in response["workers"]]
 
     logger.info(f"Abort request for {urls}")
-    await asyncio.gather(*[post(f"{url}/abort_request", {"abort_all": True}) for url in urls])
+    abort_tasks = [post(f"{url}/abort_request", {"abort_all": True}) for url in urls]
+    abort_results = await asyncio.gather(*abort_tasks, return_exceptions=True)
+    for url, result in zip(urls, abort_results, strict=False):
+        if isinstance(result, Exception):
+            logger.warning(f"Failed to abort worker at {url}: {result}")
 
     # make sure all the pending tasks are finished
     count = 0
@@ -408,7 +437,7 @@ async def generate_rollout_async(
             if do_print:
                 sample = group[0][0] if isinstance(group[0], list) else group[0]
                 logger.info(
-                    f"First rollout sample: {[str(sample.prompt) + sample.response]}, label: {sample.label}, reward: {sample.reward}",
+                    f"First rollout sample: {[str(sample.prompt) + sample.response]}, label: {str(sample.label)[:100]}, reward: {sample.reward}",
                 )
                 do_print = False
 
@@ -429,7 +458,7 @@ async def generate_rollout_async(
     pbar.close()
     sample = data[-1][0][0] if isinstance(data[-1][0], list) else data[-1][0]
     logger.info(
-        f"Finish rollout: {[str(sample.prompt) + sample.response]}, label: {sample.label}, reward: {sample.reward}",
+        f"Finish rollout: {[str(sample.prompt) + sample.response]}, label: {str(sample.label)[:100]}, reward: {sample.reward}",
     )
 
     # there are still some unfinished requests, abort them
@@ -437,7 +466,9 @@ async def generate_rollout_async(
 
     assert len(data) == args.rollout_batch_size, f"Got {len(data)} samples, expected {args.rollout_batch_size}"
     data = sorted(data, key=lambda group: group[0][0].index if isinstance(group[0], list) else group[0].index)
-    all_samples = sorted(data, key=lambda group: group[0][0].index if isinstance(group[0], list) else group[0].index)
+    all_samples = sorted(
+        all_data, key=lambda group: group[0][0].index if isinstance(group[0], list) else group[0].index
+    )
 
     # reset the global state to prevent effects on the next rollout or eval.
     state.reset()
@@ -525,6 +556,7 @@ async def eval_rollout_single_dataset(
             sample.index = sample_index
             sample_index += 1
             sample.metadata = dataset_cfg.inject_metadata(getattr(sample, "metadata", None))
+            sample.generate_function_path = getattr(dataset_cfg, "custom_generate_function_path", None)
             sampling_params = base_sampling_params
             if getattr(args, "sglang_enable_deterministic_inference", False):
                 sampling_params = base_sampling_params.copy()
@@ -579,11 +611,11 @@ def generate_rollout(
     Args:
         args: the whole args
         rollout_id: int, the id of the rollout, used for deterministic data generation
-        data_buffer: the data buffer to store the generated samples
+        data_source: the data source to get and store samples
         evaluation: bool, whether the rollout is for evaluation or not
 
     Returns:
-        list[list[Sample]]: a list of list of samples generated by the rollout
+        RolloutFnTrainOutput | RolloutFnEvalOutput: the output of the rollout
     """
     assert args.rollout_global_dataset
     if evaluation:

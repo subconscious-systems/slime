@@ -26,7 +26,7 @@ def execute():
         "--rm-type math "
         "--num-rollout 3 "
         "--rollout-batch-size 8 "
-        "--n-samples-per-prompt 8 "
+        "--n-samples-per-prompt 4 "
         "--rollout-max-response-len 4096 "
         "--rollout-temperature 1 "
         "--global-batch-size 32 "
@@ -68,8 +68,13 @@ def execute():
         "--sglang-mem-fraction-static 0.6 "
         "--sglang-decode-log-interval 1000 "
         "--sglang-enable-metrics "
+        # "--sglang-enable-deterministic-inference "
+        # "--sglang-rl-on-policy-target fsdp "
         "--sglang-attention-backend fa3 "
         "--attn-implementation flash_attention_3 "
+        "--sglang-cuda-graph-max-bs 32 "
+        # "--deterministic-mode "
+        # "--true-on-policy-mode "
     )
 
     ci_args = "--ci-test "
@@ -91,6 +96,9 @@ def execute():
     )
 
     extra_env_vars = {
+        # "NCCL_ALGO": "allreduce:tree",
+        # "NVTE_ALLOW_NONDETERMINISTIC_ALGO": "0",
+        # "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
         "CUDA_DEVICE_MAX_CONNECTIONS": "1",
     }
 
@@ -104,8 +112,6 @@ def execute():
 
 if __name__ == "__main__":
     prepare()
-    os.environ.pop("http_proxy", None)
-    os.environ.pop("https_proxy", None)
-    os.environ.pop("HTTP_PROXY", None)
-    os.environ.pop("HTTPS_PROXY", None)
+    for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
+        os.environ.pop(proxy_var, None)
     execute()
