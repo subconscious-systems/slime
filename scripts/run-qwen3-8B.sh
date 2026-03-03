@@ -12,24 +12,6 @@ pkill -9 python
 
 set -ex
 
-export MASTER_ADDR="10.128.2.102"
-export BASE_FOLDER="/mnt/slurm"
-export GLOO_SOCKET_IFNAME=bond0
-
-# Fix CUDA paths for conda-installed cuda-toolkit
-# The headers are in targets/x86_64-linux/include, not in include/
-
-# if base folder not set raise error
-if [ -z "${BASE_FOLDER}" ]; then
-  echo "BASE_FOLDER is not set. Please set it to the base directory of your checkpoints."
-  exit 1
-fi
-
-if [ -z "${MASTER_ADDR}" ]; then
-  echo "MASTER_ADDR is not set. Please set it to the master node address."
-  exit 1
-fi
-
 # will prevent ray from buffering stdout/stderr
 export PYTHONBUFFERED=16
 
@@ -42,19 +24,13 @@ fi
 echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-source "${SCRIPT_DIR}/models/qwen3-next-80B-A3B.sh"
+source "${SCRIPT_DIR}/models/qwen3-8B.sh"
 
 CKPT_ARGS=(
-   # --hf-checkpoint ${BASE_FOLDER}/models/Qwen3-Next-80B-A3B-Thinking
-   # --ref-load ${SLIME_DIR}/resource/Qwen3-Next-80B-A3B-Thinking_torch_dist
-   # --load ${SLIME_DIR}/ckpts/Qwen3-Next-80B-A3B-Thinking_slime/
-   # --save ${SLIME_DIR}/ckpts/Qwen3-Next-80B-A3B-Thinking_slime/
-
-   --hf-checkpoint ${BASE_FOLDER}/models/tim-next-80B-A3B-SFT
-   --ref-load ${SLIME_DIR}/resource/tim-next-80B-A3B-SFT_torch_dist
-   --load ${SLIME_DIR}/ckpts/tim-next-80B-A3B_torch_dist_slime-rl/
-   --save ${SLIME_DIR}/ckpts/tim-next-80B-A3B_torch_dist_slime-rl/
-
+   --hf-checkpoint ${BASE_FOLDER}/models/tim-8B-SFT/
+   --ref-load ${SLIME_DIR}/resource/tim-8B-SFT_torch_dist
+   --load ${SLIME_DIR}/ckpts/tim-8B_torch_dist_slime-rl/
+   --save ${SLIME_DIR}/ckpts/tim-8B_torch_dist_slime-rl/
    --save-interval 300
 )
 
@@ -81,15 +57,14 @@ EVAL_ARGS=(
    --n-samples-per-eval-prompt 16
    --eval-max-response-len 16384
    --eval-top-p 1
-   
 )
 
 PERF_ARGS=(
-   --tensor-model-parallel-size 2
+   --tensor-model-parallel-size 4
    --sequence-parallel
-   --pipeline-model-parallel-size 4
-   --context-parallel-size 2
-   --expert-model-parallel-size 8
+   --pipeline-model-parallel-size 1
+   --context-parallel-size 1
+   --expert-model-parallel-size 1
    --expert-tensor-parallel-size 1
 
    --recompute-granularity full
@@ -98,18 +73,23 @@ PERF_ARGS=(
 
    # --micro-batch-size 1
    --use-dynamic-batch-size
-   --max-tokens-per-gpu 8192
+   --max-tokens-per-gpu 9216
 )
 
 GRPO_ARGS=(
+   # --advantage-estimator grpo
+   # --use-kl-loss
+   # --kl-loss-coef 0.00
+   # --kl-loss-type low_var_kl
+   # --entropy-coef 0.00
+   # --eps-clip 0.2
+   # --eps-clip-high 0.28
    --advantage-estimator gspo
-   #--use-kl-loss
    --kl-loss-coef 0.00
    --kl-loss-type low_var_kl
    --kl-coef 0.00
    --entropy-coef 0.00
    --eps-clip 4e-4
-   # --ref-update-interval 200
 )
 
 OPTIMIZER_ARGS=(
@@ -119,34 +99,18 @@ OPTIMIZER_ARGS=(
    --weight-decay 0.1
    --adam-beta1 0.9
    --adam-beta2 0.98
-
-   --optimizer-cpu-offload
-   --overlap-cpu-optimizer-d2h-h2d
-   --use-precision-aware-optimizer
 )
 
 WANDB_ARGS=(
    --use-wandb
    --wandb-project slime-dev
-   --wandb-group qwen3-next-80B-A3B-test
+   --wandb-group qwen3-8B-new
    --wandb-key 215aba97807e844aa3fd6d9cf554c28ac64edec8
 )
 
 SGLANG_ARGS=(
-   --rollout-num-gpus-per-engine 8
-   --sglang-mem-fraction-static 0.8
-   --sglang-ep-size 8
-   
-   --sglang-cuda-graph-bs 1 2 4 8 $(seq 16 8 128)
-
-   # mtp
-   # --sglang-speculative-algorithm EAGLE
-   # --sglang-speculative-num-steps 2
-   # --sglang-speculative-eagle-topk 1
-   # --sglang-speculative-num-draft-tokens 3
-   # --sglang-enable-draft-weights-cpu-backup
-
-   --sglang-max-running-requests 512
+   --rollout-num-gpus-per-engine 2
+   --sglang-mem-fraction-static 0.7
 )
 
 MISC_ARGS=(
@@ -158,35 +122,15 @@ MISC_ARGS=(
    --attention-softmax-in-fp32
    # need to comment this when using model with MLA
    --attention-backend flash
-
-   --moe-token-dispatcher-type alltoall
-   # --moe-enable-deepep
 )
 
-SPEC_ARGS={
-   # --mtp-num-layers 1
-   # --enable-mtp-training
-   # --mtp-loss-scaling-factor 0.2
-}
-
 # launch the master node of ray in container
-export no_proxy="127.0.0.1,${MASTER_ADDR}"
+export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
 export CUDA_HOME=/mnt/slurm/anaconda3/envs/slime
 export LD_LIBRARY_PATH=${CUDA_HOME}/lib64:${CUDA_HOME}/lib:/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
 ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 8 --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
-# for WORKER_IP in $(awk '{print $1}' /root/mpi_rack_hostfile); do
-for WORKER_IP in 10.128.2.103 10.128.2.104 10.128.2.106; do
-#   if [[ "$WORKER_IP" == "$MLP_WORKER_0_HOST" ]]; then
-#     continue
-#   fi
-  echo "Starting Ray worker on ${WORKER_IP}"
-  ssh -i /home/ubuntu/.ssh/slime_key ubuntu@"${WORKER_IP}" \
-    "source /mnt/slurm/anaconda3/bin/activate slime ; export GLOO_SOCKET_IFNAME=bond0 ; export CUDA_HOME=/mnt/slurm/anaconda3/envs/slime ; export LD_LIBRARY_PATH=\${CUDA_HOME}/lib64:\${CUDA_HOME}/lib:/usr/lib/x86_64-linux-gnu:\$LD_LIBRARY_PATH ; pkill -9 sglang ; ray stop --force ; pkill -9 python ; ray start --address=${MASTER_ADDR}:6379 --num-gpus 8 --node-ip-address ${WORKER_IP} --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265"
-done
-# wait
 
 # Build the runtime environment JSON with proper variable substitution
-# CUDA_HOME and LD_LIBRARY_PATH are needed for Triton to find CUDA drivers
 CONDA_ENV_PATH="/mnt/slurm/anaconda3/envs/slime"
 RUNTIME_ENV_JSON="{
   \"env_vars\": {
@@ -204,7 +148,7 @@ RUNTIME_ENV_JSON="{
 ray job submit --address="http://127.0.0.1:8265" \
    --runtime-env-json="${RUNTIME_ENV_JSON}" \
    -- python3 train.py \
-   --actor-num-nodes 4 \
+   --actor-num-nodes 1 \
    --actor-num-gpus-per-node 8 \
    --colocate \
    ${MODEL_ARGS[@]} \
@@ -217,7 +161,3 @@ ray job submit --address="http://127.0.0.1:8265" \
    ${EVAL_ARGS[@]} \
    ${SGLANG_ARGS[@]} \
    ${MISC_ARGS[@]}
-
-
-# ssh -i /home/ubuntu/.ssh/slime_key ubuntu@10.128.2.103 \
-#     "source /mnt/slurm/anaconda3/bin/activate slime ; pkill -9 sglang ; ray stop --force ; pkill -9 python ; ray start --address=10.128.2.102:6379 --num-gpus 8 --node-ip-address 10.128.2.103 --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265"
