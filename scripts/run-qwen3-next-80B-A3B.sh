@@ -140,11 +140,11 @@ SGLANG_ARGS=(
    --sglang-cuda-graph-bs 1 2 4 8 $(seq 16 8 128)
 
    # mtp
-   # --sglang-speculative-algorithm EAGLE
-   # --sglang-speculative-num-steps 2
-   # --sglang-speculative-eagle-topk 1
-   # --sglang-speculative-num-draft-tokens 3
-   # --sglang-enable-draft-weights-cpu-backup
+   --sglang-speculative-algorithm EAGLE
+   --sglang-speculative-num-steps 2
+   --sglang-speculative-eagle-topk 1
+   --sglang-speculative-num-draft-tokens 3
+   --sglang-enable-draft-weights-cpu-backup
 
    --sglang-max-running-requests 512
 )
@@ -162,6 +162,12 @@ MISC_ARGS=(
    --moe-token-dispatcher-type alltoall
    # --moe-enable-deepep
 )
+
+SPEC_ARGS={
+   # --mtp-num-layers 1
+   # --enable-mtp-training
+   # --mtp-loss-scaling-factor 0.2
+}
 
 # launch the master node of ray in container
 export no_proxy="127.0.0.1,${MASTER_ADDR}"
@@ -210,7 +216,8 @@ ray job submit --address="http://127.0.0.1:8265" \
    ${PERF_ARGS[@]} \
    ${EVAL_ARGS[@]} \
    ${SGLANG_ARGS[@]} \
-   ${MISC_ARGS[@]}
+   ${MISC_ARGS[@]} \
+   ${SPEC_ARGS[@]}
 
 
 # ssh -i /home/ubuntu/.ssh/slime_key ubuntu@10.128.2.103 \

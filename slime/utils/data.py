@@ -80,13 +80,13 @@ def _parse_generalized_path(s: str):
 
 def filter_long_prompt(origin_samples: list[Sample], tokenizer, processor, max_length: int | None) -> list[Sample]:
     if max_length is None:
-        return False
+        return origin_samples
 
     if not isinstance(origin_samples[0].prompt, str):
         logger.warning(
             "Skipping max_length check for list prompt. Set apply_chat_template=True to enable length filtering."
         )
-        return False
+        return origin_samples
 
     if processor:
         filtered_samples = []
@@ -130,7 +130,9 @@ def _build_messages(data: dict, prompt_key: str, as_conversation: bool, multimod
         for type_name, data_key in multimodal_keys.items():
             mt = MultimodalTypes.get(type_name)
             if mt:
-                multimodals[mt.placeholder] = (mt, list(data.get(data_key)))
+                multimodal_data = data.get(data_key)
+                if multimodal_data is not None:
+                    multimodals[mt.placeholder] = (mt, list(multimodal_data))
 
         pattern = "(" + "|".join(re.escape(p) for p in multimodals.keys()) + ")"
 
@@ -142,6 +144,10 @@ def _build_messages(data: dict, prompt_key: str, as_conversation: bool, multimod
                         continue
                     if segment in multimodals:
                         mt, content = multimodals[segment]
+                        assert len(content) > 0, (
+                            f"Not enough {mt.name} data: more '{mt.placeholder}' placeholders in prompt "
+                            f"than {mt.name}s provided in data"
+                        )
                         content_list.append({"type": mt.name, mt.name: content.pop(0)})
                     else:
                         content_list.append({"type": "text", "text": segment})
@@ -163,6 +169,12 @@ def _build_messages(data: dict, prompt_key: str, as_conversation: bool, multimod
                 raise ValueError(
                     f"Unsupported content type: {type(message['content'])}, expected str or list of dicts"
                 )
+
+        for placeholder, (mt, remaining) in multimodals.items():
+            assert len(remaining) == 0, (
+                f"Multimodal data count mismatch: {len(remaining)} more {mt.name}(s)"
+                f"than '{placeholder}' placeholders in prompt"
+            )
 
     return prompt
 

@@ -65,7 +65,7 @@ def block_fp8(weight, block_size):
         .to(torch.float8_e4m3fn)
     )
     qweight = qweight[:shape_0, :shape_1].clone().detach()
-    scale = scale.squeeze()
+    scale = scale.reshape(n_tiles, k_tiles)
 
     return qweight, scale
 
@@ -133,6 +133,7 @@ def process_file(input_path, output_path, filename, strategy, block_size, result
             and "norm" not in key
             and "lm_head" not in key
             and "eh_proj" not in key
+            and "weights_proj" not in key
         ):
             qw, s = quant_fp8(weights[key], strategy, block_size)
             q_weights[key] = qw
@@ -150,7 +151,7 @@ def process_file(input_path, output_path, filename, strategy, block_size, result
     result_collector.add_result(filename, q_weights, modules_to_not_convert)
 
 
-def convert_fp8(input_path, output_path, strategy, block_size=None, max_workers=4):
+def convert_fp8(input_path, output_path, strategy, block_size=None, max_workers=4, scale_fmt=None):
     input_path = os.path.abspath(input_path)
     os.makedirs(output_path, exist_ok=True)
 
@@ -181,6 +182,8 @@ def convert_fp8(input_path, output_path, strategy, block_size=None, max_workers=
         }
         if block_size:
             quantization_config["weight_block_size"] = block_size
+            if scale_fmt is not None:
+                quantization_config["scale_fmt"] = scale_fmt
         if len(result_collector.modules_to_not_convert) > 0:
             quantization_config["modules_to_not_convert"] = list(set(result_collector.modules_to_not_convert))
     else:
@@ -240,8 +243,9 @@ if __name__ == "__main__":
     parser.add_argument("--model-dir", type=str, help="Path to the directory of the HF safetensors model.")
     parser.add_argument("--save-dir", type=str, help="Path to the directory to save the converted model.")
     parser.add_argument("--strategy", type=str, default="block", choices=["block", "channel", "tensor"])
-    parser.add_argument("--block-size", type=int, nargs="*", default=None, help="eg. --block-size 32 32")
+    parser.add_argument("--block-size", type=int, nargs="*", default=None, help="eg. --block-size 128 128")
     parser.add_argument("--max-workers", type=int, default=1, help="Number of worker threads for parallel processing")
+    parser.add_argument("--scale-fmt", type=str, default=None, choices=["ue8m0"])
     args = parser.parse_args()
 
     if not os.path.exists(args.save_dir):
@@ -250,4 +254,4 @@ if __name__ == "__main__":
     elif not os.path.isdir(args.save_dir):
         raise ValueError("The save_dir should be a directory.")
 
-    convert_fp8(args.model_dir, args.save_dir, args.strategy, args.block_size, args.max_workers)
+    convert_fp8(args.model_dir, args.save_dir, args.strategy, args.block_size, args.max_workers, args.scale_fmt)

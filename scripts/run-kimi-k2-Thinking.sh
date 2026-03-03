@@ -130,7 +130,7 @@ SGLANG_ARGS=(
    --sglang-ep-size 16
 
    # enable deepep for sglang
-   # --sglang-enable-deepep-moe
+   # --sglang-moe-a2a-backend deepep
    # --sglang-deepep-mode auto
 
    # make every dp rank has 128 concurrency
@@ -170,7 +170,7 @@ ray job submit --address="http://127.0.0.1:8265" \
    --actor-num-nodes 32 \
    --actor-num-gpus-per-node 8 \
    --colocate \
-   --update-weight-buffer-size $(( 4 * 512 * 1024 * 1024))
+   --update-weight-buffer-size $(( 4 * 512 * 1024 * 1024)) \
    ${MODEL_ARGS[@]} \
    ${CKPT_ARGS[@]} \
    ${ROLLOUT_ARGS[@]} \

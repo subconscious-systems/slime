@@ -43,13 +43,18 @@ class UpdateWeightFromDistributed:
         self._model_update_groups = None
 
     def connect_rollout_engines(
-        self, rollout_engines: Sequence[ActorHandle], rollout_engine_lock: ActorHandle
+        self,
+        rollout_engines: Sequence[ActorHandle],
+        rollout_engine_lock: ActorHandle,
+        engine_gpu_counts: Sequence[int] | None = None,
+        engine_gpu_offsets: Sequence[int] | None = None,
     ) -> None:
         """
         Create NCCL "slime-pp_{pp_rank}" if PP source (DP=TP=0). Lock prevents concurrent broadcasts.
         """
         self.rollout_engines = rollout_engines
         self.rollout_engine_lock = rollout_engine_lock
+        self._engine_gpu_counts = engine_gpu_counts
 
         # For TP:
         #   1. AllGather parameters to rank 0
@@ -67,7 +72,10 @@ class UpdateWeightFromDistributed:
                     self.args, self._group_name, self._model_update_groups, self.rollout_engines
                 )
             self._model_update_groups = connect_rollout_engines_from_distributed(
-                self.args, self._group_name, rollout_engines
+                self.args,
+                self._group_name,
+                rollout_engines,
+                engine_gpu_counts=engine_gpu_counts,
             )
 
     @torch.no_grad()
@@ -80,6 +88,14 @@ class UpdateWeightFromDistributed:
         if dist.get_rank() == 0:
             ray.get([engine.pause_generation.remote() for engine in self.rollout_engines])
             ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
+
+            # int4/fp4 pre_process
+            if self.quantization_config and self.quantization_config["quant_method"] in ["compressed-tensors"]:
+                post_process_weights(
+                    restore_weights_before_load=True,
+                    post_process_quantization=False,
+                    rollout_engines=self.rollout_engines,
+                )
         dist.barrier(group=get_gloo_group())
 
         buffer_size = 0
@@ -113,6 +129,13 @@ class UpdateWeightFromDistributed:
 
         dist.barrier(group=get_gloo_group())
         if dist.get_rank() == 0:
+            # int4/fp4 post_process
+            if self.quantization_config and self.quantization_config["quant_method"] in ["compressed-tensors"]:
+                post_process_weights(
+                    restore_weights_before_load=False,
+                    post_process_quantization=True,
+                    rollout_engines=self.rollout_engines,
+                )
             ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
         dist.barrier(group=get_gloo_group())
 
@@ -227,22 +250,37 @@ class UpdateWeightFromDistributed:
 
 
 def connect_rollout_engines_from_distributed(
-    args: Namespace, group_name: str, rollout_engines: Sequence[ActorHandle]
+    args: Namespace,
+    group_name: str,
+    rollout_engines: Sequence[ActorHandle],
+    engine_gpu_counts: Sequence[int] | None = None,
 ) -> dist.ProcessGroup:
     """
     Create NCCL group: training rank 0 + all engine GPUs. Blocks until joined.
+
+    ``engine_gpu_counts`` gives the number of GPUs per engine.  When engines
+    have heterogeneous TP sizes (e.g. prefill TP=2, decode TP=4), each engine
+    occupies a different number of ranks in the NCCL group.
     """
+    if engine_gpu_counts is None:
+        engine_gpu_counts = [args.rollout_num_gpus_per_engine] * len(rollout_engines)
+
     master_address = ray._private.services.get_node_ip_address()
     with socket.socket() as sock:
         sock.bind(("", 0))
         master_port = sock.getsockname()[1]
-    world_size = len(rollout_engines) * args.rollout_num_gpus_per_engine + 1
+    world_size = sum(engine_gpu_counts) + 1  # +1 for training rank 0
+
+    # Compute cumulative rank offsets: engine i starts at cumulative[i] + 1.
+    cumulative = [0]
+    for c in engine_gpu_counts:
+        cumulative.append(cumulative[-1] + c)
 
     refs = [
         engine.init_weights_update_group.remote(
             master_address,
             master_port,
-            i * args.rollout_num_gpus_per_engine + 1,
+            cumulative[i] + 1,
             world_size,
             group_name,
             backend="nccl",
@@ -297,3 +335,22 @@ def update_weights_from_distributed(
         handle.wait()
 
     return refs
+
+
+def post_process_weights(
+    restore_weights_before_load: bool,
+    post_process_quantization: bool,
+    rollout_engines: Sequence[ActorHandle],
+):
+    """
+    Trigger post-process for int4/fp4 quantization on all rollout engines.
+    """
+    ray.get(
+        [
+            engine.post_process_weights.remote(
+                restore_weights_before_load=restore_weights_before_load,
+                post_process_quantization=post_process_quantization,
+            )
+            for engine in rollout_engines
+        ]
+    )

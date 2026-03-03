@@ -1,7 +1,10 @@
+import logging
 import math
 from typing import Any, Literal
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
 def dict_add_prefix(d: dict[str, Any], prefix: str) -> dict[str, Any]:
