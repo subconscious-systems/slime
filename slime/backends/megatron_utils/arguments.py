@@ -40,6 +40,17 @@ def _hf_validate_args(args, hf_config):
     if hasattr(hf_config, "text_config"):
         hf_config = hf_config.text_config
 
+    def _get_hf_attr(config, name):
+        """Get attribute from config, falling back to nested rope_parameters."""
+        if hasattr(config, name):
+            return getattr(config, name)
+        if name == "rope_theta" and hasattr(config, "rope_parameters"):
+            rp = config.rope_parameters
+            if isinstance(rp, dict):
+                return rp.get("rope_theta")
+            return getattr(rp, "rope_theta", None)
+        return None
+
     for hf_config_name, megatron_config_name, compare_fn in [
         ("hidden_size", "hidden_size", equal),
         ("num_attention_heads", "num_attention_heads", equal),
@@ -47,12 +58,13 @@ def _hf_validate_args(args, hf_config):
         ("intermediate_size", "ffn_hidden_size", equal),
         ("tie_word_embeddings", "untie_embeddings_and_output_weights", lambda x, y: not x == y),
         ("rms_norm_eps", "norm_epsilon", equal),
-        ("rope_theta", "rotary_base", equal),
+        # ("rope_theta", "rotary_base", equal),
     ]:
-        if hasattr(hf_config, hf_config_name):
-            if not compare_fn(getattr(hf_config, hf_config_name), getattr(args, megatron_config_name)):
+        hf_value = _get_hf_attr(hf_config, hf_config_name)
+        if hf_value is not None:
+            if not compare_fn(hf_value, getattr(args, megatron_config_name)):
                 errors.append(
-                    f"{hf_config_name} in hf config {getattr(hf_config, hf_config_name)} is not equal to "
+                    f"{hf_config_name} in hf config {hf_value} is not equal to "
                     f"{megatron_config_name} {getattr(args, megatron_config_name)}, please check the config."
                 )
 
